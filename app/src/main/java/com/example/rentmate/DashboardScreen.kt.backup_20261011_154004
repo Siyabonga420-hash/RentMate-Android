@@ -1,0 +1,2967 @@
+package com.example.rentmate
+
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
+import android.content.Context
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.ui.graphics.vector.ImageVector
+
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+
+import kotlinx.coroutines.launch
+
+import org.json.JSONArray
+import org.json.JSONObject
+
+import java.text.NumberFormat
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+
+// =====================================================
+// RENTMATE COLOURS
+// =====================================================
+
+private val dashboardNavy = Color(0xFF2D3142)
+private val dashboardOrange = Color(0xFFF56038)
+private val dashboardPink = Color(0xFFE83E91)
+private val dashboardBlue = Color(0xFF506079)
+private val dashboardGreen = Color(0xFF00813D)
+private val dashboardBackground = Color(0xFFF4F5F7)
+private val dashboardMuted = Color(0xFF777D8A)
+
+// =====================================================
+// DASHBOARD FEATURE MODEL
+// =====================================================
+
+private data class DashboardFeature(
+    val title: String,
+    val icon: ImageVector,
+    val colour: Color,
+    val section: String
+)
+
+// =====================================================
+// MAIN TENANT DASHBOARD
+// =====================================================
+
+@Composable
+fun DashboardScreen(
+    onProfileClick: () -> Unit,
+    onSettingsClick: () -> Unit = {},
+    onLogoutClick: () -> Unit = {},
+    onFindAccommodationClick: () -> Unit = {},
+    onFeatureNavigate: (String) -> Unit = {}
+) {
+
+    val context = LocalContext.current
+    val repo = remember { RentMateRepository() }
+    val scope = rememberCoroutineScope()
+
+    // -------------------------------------------------
+    // DASHBOARD STATE
+    // -------------------------------------------------
+
+    var dashboard by remember {
+        mutableStateOf<JSONObject?>(null)
+    }
+
+    var loading by remember {
+        mutableStateOf(true)
+    }
+
+    var dashboardError by remember {
+        mutableStateOf("")
+    }
+
+    // -------------------------------------------------
+    // SECTION STATE
+    // -------------------------------------------------
+
+    var selectedSection by remember {
+        mutableStateOf<String?>(null)
+    }
+
+    var sectionItems by remember {
+        mutableStateOf(JSONArray())
+    }
+
+    var sectionLoading by remember {
+        mutableStateOf(false)
+    }
+
+    var sectionError by remember {
+        mutableStateOf("")
+    }
+
+    // -------------------------------------------------
+    // ADD RECORD STATE
+    // -------------------------------------------------
+
+    var showCreate by remember {
+        mutableStateOf(false)
+    }
+
+    var createTitle by remember {
+        mutableStateOf("")
+    }
+
+    var bookingStart by remember {
+        mutableStateOf("")
+    }
+
+    var bookingEnd by remember {
+        mutableStateOf("")
+    }
+
+    var choreDueAt by remember { mutableStateOf("") }
+
+    var createError by remember {
+        mutableStateOf("")
+    }
+
+    var saving by remember {
+        mutableStateOf(false)
+    }
+
+    // -------------------------------------------------
+    // RENTMATE DEMO PAYMENT STATE
+    var showDemoPaymentDialog by remember { mutableStateOf(false) }
+    var demoPaymentLoading by remember { mutableStateOf(false) }
+    var demoPaymentMessage by remember { mutableStateOf("") }
+    var demoPaymentError by remember { mutableStateOf("") }
+    var demoPaymentRequestId by remember { mutableStateOf("") }
+    // RENTMATE DEMO PAYMENT PREVIEW STATE
+    var demoPreviewLoading by remember { mutableStateOf(false) }
+    var demoPreviewRentId by remember { mutableStateOf("") }
+    var demoPreviewDueDate by remember { mutableStateOf("") }
+    var demoPreviewRentDue by remember { mutableDoubleStateOf(0.0) }
+    var demoPreviewPaid by remember { mutableDoubleStateOf(0.0) }
+    var demoPreviewOutstanding by remember { mutableDoubleStateOf(0.0) }
+
+    // Android-only demo rent balance
+    var demoBalanceLoaded by remember { mutableStateOf(false) }
+    var demoTotalPaid by remember { mutableDoubleStateOf(0.0) }
+    var demoOutstanding by remember { mutableDoubleStateOf(0.0) }
+
+    suspend fun refreshDemoBalance() {
+        demoBalanceLoaded = false
+
+        try {
+            val rentItems = repo.getRentHistory()
+
+            var totalDemoPaid = 0.0
+            var totalDemoOutstanding = 0.0
+
+            for (i in 0 until rentItems.length()) {
+                val item = rentItems.optJSONObject(i) ?: continue
+
+                val actualOutstanding =
+                    item.optDouble("outstanding", 0.0)
+
+                val paidDemo =
+                    item.optDouble("demo_amount_paid", 0.0)
+
+                totalDemoPaid += paidDemo
+
+                totalDemoOutstanding +=
+                    (actualOutstanding - paidDemo).coerceAtLeast(0.0)
+            }
+
+            demoTotalPaid = totalDemoPaid
+            demoOutstanding = totalDemoOutstanding
+            demoBalanceLoaded = true
+
+        } catch (e: Exception) {
+            demoBalanceLoaded = false
+        }
+    }
+    // REFRESH DASHBOARD
+    // -------------------------------------------------
+
+    suspend fun refreshDashboard() {
+
+        loading = true
+        dashboardError = ""
+
+        try {
+
+            dashboard = repo.getDashboardJson()
+
+        } catch (e: Exception) {
+
+            dashboardError =
+                e.message ?: "Unable to load your dashboard."
+
+            dashboard = null
+
+        } finally {
+
+            loading = false
+        }
+    }
+
+    // -------------------------------------------------
+    // OPEN A DASHBOARD SECTION
+    // -------------------------------------------------
+
+    fun openSection(name: String) {
+
+        selectedSection = name
+        sectionItems = JSONArray()
+        sectionError = ""
+        sectionLoading = true
+
+        scope.launch {
+
+            try {
+
+                sectionItems = when (name) {
+
+                    "Chores" -> repo.getChores()
+
+                    "Shared Groceries" -> repo.getGroceries()
+
+                    "Kitchen & Braai" -> repo.getBookings()
+
+                    "Rent" -> repo.getRentHistory()
+
+                    "Payments" -> repo.getPayments()
+
+                    "Announcements" -> repo.getAnnouncements()
+
+                    "Expenses" -> repo.getExpenses()
+
+                    "Expense splits" -> repo.getExpenseSplits()
+
+                    else -> JSONArray()
+                }
+
+            } catch (e: Exception) {
+
+                sectionError =
+                    e.message ?: "Unable to load $name."
+
+            } finally {
+
+                sectionLoading = false
+            }
+        }
+    }
+
+    // -------------------------------------------------
+    // LOAD DATA WHEN DASHBOARD OPENS
+    // -------------------------------------------------
+
+    LaunchedEffect(RentMateSession.userId) {
+
+        refreshDashboard()
+        refreshDemoBalance()
+    }
+
+    // -------------------------------------------------
+    // TENANT INFORMATION
+    // -------------------------------------------------
+
+    val assigned =
+        dashboard?.optBoolean("assigned", false) == true
+
+    val userName = dashboard
+        ?.optString("user_name", "")
+        .orEmpty()
+        .ifBlank { "Tenant" }
+
+    val firstName = userName
+        .trim()
+        .substringBefore(" ")
+        .ifBlank { "Tenant" }
+
+    val household =
+        dashboard?.optJSONObject("household")
+
+    val householdName = household
+        ?.optString("name", "")
+        .orEmpty()
+
+    val memberCount =
+        household?.optInt("member_count", 0) ?: 0
+
+    val householdType = household
+        ?.optString("type", "")
+        .orEmpty()
+
+    val pinnedNote = household
+        ?.optString("pinned_note", "")
+        .orEmpty()
+
+    // -------------------------------------------------
+    // INDIVIDUAL RENT INFORMATION
+    // -------------------------------------------------
+
+    val rentDue =
+        dashboard?.optDouble("rent_due", 0.0) ?: 0.0
+
+    val amountPaid =
+        dashboard?.optDouble("amount_paid", 0.0) ?: 0.0
+
+    val outstanding =
+        dashboard?.optDouble("outstanding", 0.0) ?: 0.0
+
+    val dueDate = dashboard
+        ?.optString("due_date", "")
+        .orEmpty()
+
+    val paymentStatus = dashboard
+        ?.optString("payment_status", "")
+        .orEmpty()
+
+    // -------------------------------------------------
+    // DASHBOARD FEATURES
+    // -------------------------------------------------
+
+    val features = remember {
+
+        listOf(
+
+            DashboardFeature(
+                title = "Commune Chores",
+                icon = Icons.Filled.CheckCircle,
+                colour = dashboardBlue,
+                section = "Chores"
+            ),
+
+            DashboardFeature(
+                title = "Kitchen & Braai",
+                icon = Icons.Filled.Event,
+                colour = dashboardPink,
+                section = "Kitchen & Braai"
+            ),
+
+            DashboardFeature(
+                title = "Shared Groceries",
+                icon = Icons.Filled.ShoppingCart,
+                colour = dashboardOrange,
+                section = "Shared Groceries"
+            ),
+
+            DashboardFeature(
+                title = "Rent & Bills",
+                icon = Icons.Filled.AccountBalanceWallet,
+                colour = dashboardPink,
+                section = "Rent"
+            ),
+
+            DashboardFeature(
+                title = "Announcements",
+                icon = Icons.Filled.Campaign,
+                colour = dashboardOrange,
+                section = "Announcements"
+            ),
+
+            DashboardFeature(
+                title = "Payments",
+                icon = Icons.Filled.Payment,
+                colour = dashboardBlue,
+                section = "Payments"
+            )
+        )
+    }
+
+    // =====================================================
+    // MAIN SCREEN
+    // =====================================================
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(dashboardBackground)
+    ) {
+
+        // =================================================
+        // NAVY WELCOME HEADER
+        // =================================================
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(dashboardNavy)
+                .padding(
+                    start = 20.dp,
+                    end = 20.dp,
+                    top = 18.dp,
+                    bottom = 26.dp
+                )
+        ) {
+
+            val today = remember {
+
+                SimpleDateFormat(
+                    "EEEE, d MMMM yyyy",
+                    Locale.ENGLISH
+                ).format(Date())
+            }
+
+            Text(
+                text = today,
+                color = Color.White.copy(alpha = 0.8f),
+                fontSize = 13.sp
+            )
+
+            Spacer(
+                modifier = Modifier.height(22.dp)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+
+                    Text(
+                        text = "Welcome Back,",
+                        color = Color.White.copy(alpha = 0.85f),
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(4.dp)
+                    )
+
+                    Text(
+                        text = "$firstName",
+                        color = Color.White,
+                        fontSize = 29.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(6.dp)
+                    )
+
+                    Text(
+                        text = "Your home, made easier.",
+                        color = Color.White.copy(alpha = 0.75f),
+                        fontSize = 12.sp
+                    )
+                }
+
+                Text(
+                    text = "",
+                    fontSize = 23.sp,
+                    modifier = Modifier
+                        .clickable {
+                            if (assigned) {
+                                openSection("Announcements")
+                            }
+                        }
+                        .padding(7.dp)
+                )
+
+                Text(
+                    text = "",
+                    fontSize = 23.sp,
+                    modifier = Modifier
+                        .clickable {
+                            onProfileClick()
+                        }
+                        .padding(7.dp)
+                )
+
+                Text(
+                    text = "",
+                    color = Color.White,
+                    fontSize = 27.sp,
+                    modifier = Modifier
+                        .clickable {
+                            onSettingsClick()
+                        }
+                        .padding(7.dp)
+                )
+            }
+        }
+
+        // =================================================
+        // SCROLLABLE DASHBOARD BODY
+        // =================================================
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+        ) {
+
+            // ---------------------------------------------
+            // LOADING
+            // ---------------------------------------------
+
+            if (loading) {
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(40.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+
+                    CircularProgressIndicator(
+                        color = dashboardGreen
+                    )
+                }
+
+            } else if (dashboardError.isNotBlank()) {
+
+                // -----------------------------------------
+                // ERROR CARD
+                // -----------------------------------------
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color.White
+                    )
+                ) {
+
+                    Column(
+                        modifier = Modifier.padding(20.dp)
+                    ) {
+
+                        Text(
+                            text = "Unable to load dashboard",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Spacer(
+                            modifier = Modifier.height(10.dp)
+                        )
+
+                        Text(
+                            text = dashboardError,
+                            color = MaterialTheme.colorScheme.error
+                        )
+
+                        Spacer(
+                            modifier = Modifier.height(16.dp)
+                        )
+
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    refreshDashboard()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = dashboardGreen
+                            )
+                        ) {
+
+                            Text("Try Again")
+                        }
+                    }
+                }
+
+            } else if (!assigned) {
+
+                // -----------------------------------------
+                // UNASSIGNED TENANT
+                // -----------------------------------------
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(22.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color.White
+                    )
+                ) {
+
+                    Column(
+                        modifier = Modifier.padding(24.dp)
+                    ) {
+
+                        Text(
+                            text = "",
+                            fontSize = 45.sp
+                        )
+
+                        Spacer(
+                            modifier = Modifier.height(12.dp)
+                        )
+
+                        Text(
+                            text = "Welcome to RentMate!",
+                            fontSize = 23.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = dashboardNavy
+                        )
+
+                        Spacer(
+                            modifier = Modifier.height(10.dp)
+                        )
+
+                        Text(
+                            text = "Your account is ready.",
+                            fontWeight = FontWeight.Medium
+                        )
+
+                        Spacer(
+                            modifier = Modifier.height(8.dp)
+                        )
+
+                        Text(
+                            text = "You have not been assigned to a property yet. Once your property manager assigns you to a home, your household features will become available.",
+                            color = dashboardMuted,
+                            fontSize = 14.sp
+                        )
+
+                        Spacer(
+                            modifier = Modifier.height(22.dp)
+                        )
+
+                        Button(
+                            onClick = onFindAccommodationClick,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = dashboardGreen
+                            ),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+
+                            Text("Find Accommodation")
+                        }
+
+                        Spacer(
+                            modifier = Modifier.height(10.dp)
+                        )
+
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    refreshDashboard()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+
+                            Text("Refresh Assignment")
+                        }
+                    }
+                }
+
+            } else {
+
+                // =========================================
+                // FIND ACCOMMODATION BUTTON
+                // =========================================
+
+                OutlinedButton(
+                    onClick = onFindAccommodationClick,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = PaddingValues(14.dp)
+                ) {
+
+                    Text(
+                        text = "Find Accommodation",
+                        color = dashboardNavy,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Spacer(
+                    modifier = Modifier.height(24.dp)
+                )
+
+                // =========================================
+                // HOUSEMATES SECTION
+                // =========================================
+
+                Text(
+                    text = "Housemates",
+                    fontSize = 23.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = dashboardNavy
+                )
+
+                Spacer(
+                    modifier = Modifier.height(6.dp)
+                )
+
+                Text(
+                    text = if (memberCount == 1) {
+                        "1 member in your home"
+                    } else {
+                        "$memberCount members in your home"
+                    },
+                    color = dashboardMuted,
+                    fontSize = 14.sp
+                )
+
+                Spacer(
+                    modifier = Modifier.height(14.dp)
+                )
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color.White
+                    )
+                ) {
+
+                    Row(
+                        modifier = Modifier.padding(20.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+
+                        Surface(
+                            modifier = Modifier.size(52.dp),
+                            shape = CircleShape,
+                            color = dashboardBackground
+                        ) {
+
+                            Box(
+                                contentAlignment = Alignment.Center
+                            ) {
+
+                                Text(
+                                    text = "",
+                                    fontSize = 25.sp
+                                )
+                            }
+                        }
+
+                        Spacer(
+                            modifier = Modifier.width(14.dp)
+                        )
+
+                        Column {
+
+                            Text(
+                                text = householdName.ifBlank {
+                                    "Your Household"
+                                },
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = dashboardNavy
+                            )
+
+                            Spacer(
+                                modifier = Modifier.height(5.dp)
+                            )
+
+                            Text(
+                                text = "$memberCount registered ${if (memberCount == 1) "member" else "members"}",
+                                fontSize = 13.sp,
+                                color = dashboardMuted
+                            )
+                        }
+                    }
+                }
+
+                Spacer(
+                    modifier = Modifier.height(18.dp)
+                )
+
+                // =========================================
+                // HOUSEHOLD TYPE
+                // =========================================
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+
+                    HouseholdTypeButton(
+                        text = "Student Commune",
+                        selected = householdType.equals(
+                            "student_commune",
+                            ignoreCase = true
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    HouseholdTypeButton(
+                        text = "Family Home",
+                        selected = householdType.equals(
+                            "family_home",
+                            ignoreCase = true
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Spacer(
+                    modifier = Modifier.height(20.dp)
+                )
+
+                // =========================================
+                // PINNED NOTE
+                // =========================================
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color.White
+                    )
+                ) {
+
+                    Column(
+                        modifier = Modifier.padding(20.dp)
+                    ) {
+
+                        Text(
+                            text = "Pinned Note",
+                            fontSize = 19.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = dashboardNavy
+                        )
+
+                        Spacer(
+                            modifier = Modifier.height(10.dp)
+                        )
+
+                        Text(
+                            text = pinnedNote.ifBlank {
+                                "No announcements pinned to your home yet."
+                            },
+                            fontSize = 14.sp,
+                            color = dashboardMuted
+                        )
+                    }
+                }
+
+                Spacer(
+                    modifier = Modifier.height(22.dp)
+                )
+
+                // =========================================
+                // RENT OVERVIEW
+                // =========================================
+
+                // RENTMATE DEMO PAYMENT BUTTON
+                if (outstanding > 0.005) {
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Button(
+                        onClick = {
+                            demoPaymentMessage = ""
+                            demoPaymentError = ""
+                            demoPreviewLoading = true
+
+                            scope.launch {
+                                try {
+                                    val rentItems = repo.getRentHistory()
+
+                                    var found = false
+
+                                    for (i in 0 until rentItems.length()) {
+                                        val item = rentItems.optJSONObject(i)
+                                            ?: continue
+
+                                        val actualOutstanding =
+                                            item.optDouble("outstanding", 0.0)
+
+                                        val previousDemoPayments =
+                                            item.optDouble("demo_amount_paid", 0.0)
+
+                                        val remaining =
+                                            (actualOutstanding - previousDemoPayments)
+                                                .coerceAtLeast(0.0)
+
+                                        if (
+                                            item.optString("id").isBlank() ||
+                                            remaining <= 0.005
+                                        ) {
+                                            continue
+                                        }
+
+                                        demoPreviewRentId = item.optString("id")
+                                        demoPreviewDueDate = item.optString("due_date")
+                                        demoPreviewRentDue =
+                                            item.optDouble("amount_due", 0.0)
+                                        demoPreviewPaid =
+                                            item.optDouble("amount_paid", 0.0)
+                                        demoPreviewOutstanding = remaining
+
+                                        found = true
+                                        break
+                                    }
+
+                                    if (!found) {
+                                        throw IllegalStateException(
+                                            "No outstanding rent charge was found."
+                                        )
+                                    }
+
+                                    demoPaymentRequestId =
+                                        java.util.UUID.randomUUID().toString()
+
+                                    showDemoPaymentDialog = true
+
+                                } catch (e: Exception) {
+                                    demoPaymentError =
+                                        e.message ?: "Unable to load rent details."
+                                } finally {
+                                    demoPreviewLoading = false
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !demoPaymentLoading && !demoPreviewLoading,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = dashboardGreen
+                        ),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Text(
+                            if (demoPreviewLoading) {
+                                "Loading Rent Details..."
+                            } else {
+                                "Pay Rent"
+                            }
+                        )
+                    }
+
+                    Text(
+                        text = "SIMULATED PAYMENT - No real money will be transferred.",
+                        modifier = Modifier.padding(top = 8.dp),
+                        fontSize = 12.sp,
+                        color = dashboardMuted
+                    )
+                }
+
+                if (demoPaymentMessage.isNotBlank()) {
+                    Text(
+                        text = demoPaymentMessage,
+                        modifier = Modifier.padding(top = 10.dp),
+                        color = dashboardGreen
+                    )
+                }
+
+                if (demoPaymentError.isNotBlank()) {
+                    Text(
+                        text = demoPaymentError,
+                        modifier = Modifier.padding(top = 10.dp),
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                RentOverviewCard(
+                    rentDue = rentDue,
+                    amountPaid = amountPaid,
+                    outstanding = outstanding,
+                    dueDate = dueDate,
+                    paymentStatus = paymentStatus,
+                    onPaymentsClick = {
+                        openSection("Payments")
+                    },
+                    onRentClick = {
+                        openSection("Rent")
+                    }
+                )
+
+                Spacer(
+                    modifier = Modifier.height(26.dp)
+                )
+
+                // =========================================
+                // DASHBOARD FEATURE SECTION
+                // =========================================
+
+                Text(
+                    text = "RentMate Dashboard",
+                    fontSize = 23.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = dashboardNavy
+                )
+
+                Spacer(
+                    modifier = Modifier.height(6.dp)
+                )
+
+                Text(
+                    text = "Everything you need to manage your shared home.",
+                    color = dashboardMuted,
+                    fontSize = 14.sp
+                )
+
+                Spacer(
+                    modifier = Modifier.height(20.dp)
+                )
+
+                // =========================================
+                // ORIGINAL CIRCULAR FEATURE BUTTONS
+                // =========================================
+
+                features.chunked(2).forEach { rowFeatures ->
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+
+                        rowFeatures.forEach { feature ->
+
+                            Box(
+                                modifier = Modifier.weight(1f)
+                            ) {
+
+                                CircularDashboardFeature(
+                                    feature = feature,
+                                    onClick = {
+                                        when (feature.section) {
+
+                                            "Chores" -> {
+                                                onFeatureNavigate("chores")
+                                            }
+
+                                            "Shared Groceries" -> {
+                                                onFeatureNavigate("groceries")
+                                            }
+
+                                            "Kitchen & Braai" -> {
+                                                onFeatureNavigate("kitchen_bookings")
+                                            }
+
+                                            else -> {
+                                                openSection(feature.section)
+                                            }
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(
+                        modifier = Modifier.height(16.dp)
+                    )
+                }
+
+                Spacer(
+                    modifier = Modifier.height(16.dp)
+                )
+            }
+        }
+    }
+
+    // =====================================================
+    // SECTION DIALOG
+    // =====================================================
+
+    // RENTMATE DEMO PAYMENT CONFIRMATION
+    if (showDemoPaymentDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!demoPaymentLoading) {
+                    showDemoPaymentDialog = false
+                }
+            },
+            title = {
+                Text("Confirm Rent Payment")
+            },
+            text = {
+                Column {
+                    // RENTMATE ACCURATE DEMO PAYMENT CONFIRMATION
+                    Text(
+                        "Billing date: " + demoPreviewDueDate,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        "Original rent: " +
+                            formatRentMoney(demoPreviewRentDue)
+                    )
+
+                    Text(
+                        "Already paid: " +
+                            formatRentMoney(demoPreviewPaid)
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        "Demo payment amount: " +
+                            formatRentMoney(demoPreviewOutstanding),
+                        fontWeight = FontWeight.Bold,
+                        color = dashboardGreen
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Text(
+                        "This is a DEMO PAYMENT. No real money " +
+                            "will be transferred.",
+                        color = dashboardOrange,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    if (demoPaymentLoading) {
+                        Spacer(modifier = Modifier.height(14.dp))
+                        CircularProgressIndicator(
+                            color = dashboardGreen
+                        )
+                    }
+
+                    if (demoPaymentError.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            demoPaymentError,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !demoPaymentLoading,
+                    onClick = {
+                        demoPaymentLoading = true
+                        demoPaymentError = ""
+
+                        scope.launch {
+                            try {
+                                // RENTMATE USE PREVIEWED RENT CHARGE
+                                val selectedRentId = demoPreviewRentId
+                                val amountToPay = demoPreviewOutstanding
+
+                                if (selectedRentId.isBlank()) {
+                                    throw IllegalStateException(
+                                        "No rent charge was selected."
+                                    )
+                                }
+
+                                if (amountToPay <= 0.0) {
+                                    throw IllegalStateException(
+                                        "There is no outstanding rent to pay."
+                                    )
+                                }
+
+                                val result = repo.makeDemoPayment(
+                                    rentId = selectedRentId,
+                                    amount = String.format(
+                                        Locale.US,
+                                        "%.2f",
+                                        amountToPay
+                                    ),
+                                    requestId = demoPaymentRequestId
+                                )
+
+                                if (!result.optBoolean("simulated")) {
+                                    throw IllegalStateException(
+                                        "Unexpected payment response."
+                                    )
+                                }
+
+                                showDemoPaymentDialog = false
+
+                                demoPaymentMessage =
+                                    "Demo payment recorded successfully. " +
+                                        "No real money was transferred."
+
+                                refreshDashboard()
+                                refreshDemoBalance()
+
+                            } catch (e: Exception) {
+                                demoPaymentError =
+                                    e.message ?: "Demo payment failed."
+                            } finally {
+                                demoPaymentLoading = false
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = dashboardGreen
+                    )
+                ) {
+                    Text(
+                        if (demoPaymentLoading) {
+                            "Processing..."
+                        } else {
+                            "Confirm Payment"
+                        }
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !demoPaymentLoading,
+                    onClick = {
+                        showDemoPaymentDialog = false
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+    selectedSection?.let { currentSection ->
+
+        AlertDialog(
+            onDismissRequest = {
+                if (!showCreate) {
+                    selectedSection = null
+                }
+            },
+
+            shape = RoundedCornerShape(26.dp),
+
+            containerColor = Color(0xFFF0EAF4),
+
+            title = {
+
+                Text(
+                    text = currentSection,
+                    fontSize = 23.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = dashboardNavy
+                )
+            },
+
+            text = {
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+
+                    if (sectionLoading) {
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+
+                            CircularProgressIndicator(
+                                color = dashboardGreen
+                            )
+                        }
+
+                    } else if (sectionError.isNotBlank()) {
+
+                        Text(
+                            text = sectionError,
+                            color = MaterialTheme.colorScheme.error
+                        )
+
+                        TextButton(
+                            onClick = {
+                                openSection(currentSection)
+                            }
+                        ) {
+
+                            Text("Try Again")
+                        }
+
+                    } else if (sectionItems.length() == 0) {
+
+                        EmptySectionMessage(
+                            section = currentSection
+                        )
+
+                    } else {
+
+                        for (i in 0 until sectionItems.length()) {
+
+                            val item =
+                                sectionItems.optJSONObject(i)
+                                    ?: continue
+
+                            SectionRecord(
+                                item = item,
+                                section = currentSection,
+
+                                onCompleteChore = { id ->
+
+                                    scope.launch {
+
+                                        sectionLoading = true
+                                        sectionError = ""
+
+                                        try {
+
+                                            repo.completeChore(id)
+
+                                            sectionItems =
+                                                repo.getChores()
+
+                                            dashboard =
+                                                repo.getDashboardJson()
+
+                                        } catch (e: Exception) {
+
+                                            sectionError =
+                                                e.message
+                                                    ?: "Unable to complete chore."
+
+                                        } finally {
+
+                                            sectionLoading = false
+                                        }
+                                    }
+                                },
+
+                                onPurchaseGrocery = { id ->
+
+                                    scope.launch {
+
+                                        sectionLoading = true
+                                        sectionError = ""
+
+                                        try {
+
+                                            repo.purchaseGrocery(id)
+
+                                            sectionItems =
+                                                repo.getGroceries()
+
+                                        } catch (e: Exception) {
+
+                                            sectionError =
+                                                e.message
+                                                    ?: "Unable to update grocery."
+
+                                        } finally {
+
+                                            sectionLoading = false
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            },
+
+            confirmButton = {
+
+                Row {
+
+                    if (
+                        currentSection in listOf(
+                            "Chores",
+                            "Shared Groceries",
+                            "Kitchen & Braai"
+                        )
+                    ) {
+
+                        TextButton(
+                            onClick = {
+
+                                createTitle = ""
+                                bookingStart = ""
+                                bookingEnd = ""
+                                createError = ""
+
+                                showCreate = true
+                            }
+                        ) {
+
+                            Text(
+                                text = "+ Add new",
+                                color = dashboardGreen,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    TextButton(
+                        onClick = {
+                            selectedSection = null
+                        }
+                    ) {
+
+                        Text(
+                            text = "Close",
+                            color = dashboardNavy
+                        )
+                    }
+                }
+            }
+        )
+    }
+
+    // =====================================================
+    // CREATE NEW RECORD DIALOG
+    // =====================================================
+
+    if (showCreate && selectedSection != null) {
+
+        val kind = selectedSection!!
+
+        AlertDialog(
+            onDismissRequest = {
+                if (!saving) {
+                    showCreate = false
+                }
+            },
+
+            shape = RoundedCornerShape(24.dp),
+
+            title = {
+
+                Text(
+                    text = when (kind) {
+
+                        "Chores" -> "Add a Chore"
+
+                        "Shared Groceries" -> "Add Grocery Item"
+
+                        "Kitchen & Braai" -> "Book Kitchen & Braai"
+
+                        else -> "Add New"
+                    },
+                    fontWeight = FontWeight.Bold
+                )
+            },
+
+            text = {
+
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+
+                    OutlinedTextField(
+                        value = createTitle,
+
+                        onValueChange = {
+                            createTitle = it
+                            createError = ""
+                        },
+
+                        label = {
+
+                            Text(
+                                when (kind) {
+
+                                    "Shared Groceries" -> "What do you need?"
+
+                                    "Kitchen & Braai" -> "Booking name"
+
+                                    "Chores" -> "Chore name"
+
+                                    else -> "Title"
+                                }
+                            )
+                        },
+
+                        placeholder = {
+
+                            Text(
+                                when (kind) {
+
+                                    "Shared Groceries" -> "e.g. Milk"
+
+                                    "Kitchen & Braai" -> "e.g. Saturday Braai"
+
+                                    "Chores" -> "e.g. Wash dishes"
+
+                                    else -> "Enter a title"
+                                }
+                            )
+                        },
+
+                        singleLine = true,
+
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    if (kind == "Chores") {
+                        OutlinedButton(
+                            onClick = { pickRentMateDateTime(context) { choreDueAt = it; createError = "" } },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (choreDueAt.isBlank()) "Select chore due date and time (required)" else formatRentMateDateTime(choreDueAt))
+                        }
+                    }
+
+                    // -------------------------------------
+                    // BOOKING DATE AND TIME
+                    // -------------------------------------
+
+                    if (kind == "Kitchen & Braai") {
+
+                        Text(
+                            text = "Choose when you want to use the kitchen or braai area.",
+                            fontSize = 13.sp,
+                            color = dashboardMuted
+                        )
+
+                        OutlinedButton(
+                            onClick = {
+
+                                showBookingDateTimePicker(
+                                    context = context,
+                                    onSelected = {
+
+                                        bookingStart = it
+                                        createError = ""
+                                    }
+                                )
+                            },
+
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+
+                            Text(
+                                text = if (bookingStart.isBlank()) {
+                                    " Select Start Date & Time"
+                                } else {
+                                    "Starts: ${displayBookingTime(bookingStart)}"
+                                }
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+
+                                showBookingDateTimePicker(
+                                    context = context,
+                                    onSelected = {
+
+                                        bookingEnd = it
+                                        createError = ""
+                                    }
+                                )
+                            },
+
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+
+                            Text(
+                                text = if (bookingEnd.isBlank()) {
+                                    " Select End Date & Time"
+                                } else {
+                                    "Ends: ${displayBookingTime(bookingEnd)}"
+                                }
+                            )
+                        }
+                    }
+
+                    if (createError.isNotBlank()) {
+
+                        Text(
+                            text = createError,
+                            color = MaterialTheme.colorScheme.error,
+                            fontSize = 13.sp
+                        )
+                    }
+
+                    if (saving) {
+
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            },
+
+            confirmButton = {
+
+                Button(
+                    enabled = !saving,
+
+                    onClick = {
+
+                        createError = ""
+
+                        val title = createTitle.trim()
+
+                        if (title.isBlank()) {
+
+                            createError =
+                                "Please enter a name."
+
+                        } else if (kind == "Chores" && !isRentMateFutureDateTime(choreDueAt)) {
+                            createError = "Please select a future chore due date and time."
+                        } else if (title.length > 150) {
+
+                            createError =
+                                "Please use fewer than 150 characters."
+
+                        } else if (
+                            kind == "Kitchen & Braai" &&
+                            (
+                                    bookingStart.isBlank() ||
+                                            bookingEnd.isBlank()
+                                    )
+                        ) {
+
+                            createError =
+                                "Please select both start and end times."
+
+                        } else if (
+                            kind == "Kitchen & Braai" &&
+                            (
+                                    parseBookingTimestamp(bookingStart) == null ||
+                                            parseBookingTimestamp(bookingEnd) == null
+                                    )
+                        ) {
+
+                            createError =
+                                "Please select valid booking dates."
+
+                        } else if (
+                            kind == "Kitchen & Braai" &&
+                            (
+                                    parseBookingTimestamp(bookingStart)!! <
+                                            System.currentTimeMillis()
+                                    )
+                        ) {
+
+                            createError =
+                                "You cannot book a date in the past."
+
+                        } else if (
+                            kind == "Kitchen & Braai" &&
+                            (
+                                    parseBookingTimestamp(bookingEnd)!! <=
+                                            parseBookingTimestamp(bookingStart)!!
+                                    )
+                        ) {
+
+                            createError =
+                                "The end time must be after the start time."
+
+                        } else {
+
+                            scope.launch {
+
+                                saving = true
+
+                                try {
+
+                                    when (kind) {
+
+                                        "Chores" -> {
+
+                                            repo.createChore(title, choreDueAt)
+                                        }
+
+                                        "Shared Groceries" -> {
+
+                                            repo.addGrocery(title)
+                                        }
+
+                                        "Kitchen & Braai" -> {
+
+                                            repo.addBooking(
+                                                title = title,
+                                                start = bookingStart,
+                                                end = bookingEnd
+                                            )
+                                        }
+                                    }
+
+                                    showCreate = false
+                                    choreDueAt = ""
+
+                                    openSection(kind)
+
+                                } catch (e: Exception) {
+
+                                    createError =
+                                        e.message ?: "Unable to save."
+
+                                } finally {
+
+                                    saving = false
+                                }
+                            }
+                        }
+                    },
+
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = dashboardGreen
+                    )
+                ) {
+
+                    Text("Save")
+                }
+            },
+
+            dismissButton = {
+
+                TextButton(
+                    enabled = !saving,
+
+                    onClick = {
+                        showCreate = false
+                    }
+                ) {
+
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
+// =====================================================
+// HOUSEHOLD TYPE INDICATOR
+// =====================================================
+
+@Composable
+private fun HouseholdTypeButton(
+    text: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier
+) {
+
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(50),
+        color = if (selected) {
+            dashboardGreen
+        } else {
+            Color.White
+        }
+    ) {
+
+        Text(
+            text = text,
+
+            modifier = Modifier.padding(
+                horizontal = 10.dp,
+                vertical = 16.dp
+            ),
+
+            textAlign = TextAlign.Center,
+
+            color = if (selected) {
+                Color.White
+            } else {
+                dashboardNavy
+            },
+
+            fontWeight = FontWeight.Bold,
+            fontSize = 12.sp
+        )
+    }
+}
+
+// =====================================================
+// CIRCULAR DASHBOARD FEATURE
+// =====================================================
+
+@Composable
+private fun CircularDashboardFeature(
+    feature: DashboardFeature,
+    onClick: () -> Unit
+) {
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clickable(onClick = onClick),
+
+        shape = CircleShape,
+        color = feature.colour
+    ) {
+
+        Column(
+            modifier = Modifier.padding(12.dp),
+
+            horizontalAlignment =
+                Alignment.CenterHorizontally,
+
+            verticalArrangement =
+                Arrangement.Center
+        ) {
+
+            Icon(
+                imageVector = feature.icon,
+                contentDescription = feature.title,
+                tint = Color.White,
+                modifier = Modifier.size(38.dp)
+            )
+
+            Spacer(
+                modifier = Modifier.height(10.dp)
+            )
+
+            Text(
+                text = feature.title,
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                fontSize = 14.sp,
+                maxLines = 2
+            )
+        }
+    }
+}
+
+// =====================================================
+// RENT OVERVIEW CARD
+// =====================================================
+
+@Composable
+private fun RentOverviewCard(
+    rentDue: Double,
+    amountPaid: Double,
+    outstanding: Double,
+    dueDate: String,
+    paymentStatus: String,
+    onPaymentsClick: () -> Unit,
+    onRentClick: () -> Unit
+) {
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color.White
+        )
+    ) {
+
+        Column(
+            modifier = Modifier.padding(20.dp)
+        ) {
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+
+                Text(
+                    text = "",
+                    fontSize = 25.sp
+                )
+
+                Spacer(
+                    modifier = Modifier.width(10.dp)
+                )
+
+                Column {
+
+                    Text(
+                        text = "My Rent Overview",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = dashboardNavy
+                    )
+
+                    Text(
+                        text = "Your personal rent account",
+                        fontSize = 12.sp,
+                        color = dashboardMuted
+                    )
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(20.dp)
+            )
+
+            // ---------------------------------------------
+            // OUTSTANDING BALANCE
+            // ---------------------------------------------
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                color = dashboardBackground
+            ) {
+
+                Column(
+                    modifier = Modifier.padding(18.dp)
+                ) {
+
+                    Text(
+                        text = "Outstanding Balance",
+                        fontSize = 13.sp,
+                        color = dashboardMuted
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(5.dp)
+                    )
+
+                    Text(
+                        text = formatRentMoney(outstanding),
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (outstanding > 0) {
+                            dashboardOrange
+                        } else {
+                            dashboardGreen
+                        }
+                    )
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(18.dp)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+
+                Column {
+
+                    Text(
+                        text = "Rent Due",
+                        color = dashboardMuted,
+                        fontSize = 12.sp
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(4.dp)
+                    )
+
+                    Text(
+                        text = formatRentMoney(rentDue),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = dashboardNavy
+                    )
+                }
+
+                Column(
+                    horizontalAlignment = Alignment.End
+                ) {
+
+                    Text(
+                        text = "Amount Paid",
+                        color = dashboardMuted,
+                        fontSize = 12.sp
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(4.dp)
+                    )
+
+                    Text(
+                        text = formatRentMoney(amountPaid),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = dashboardGreen
+                    )
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(18.dp)
+            )
+
+            HorizontalDivider(
+                color = dashboardBackground
+            )
+
+            Spacer(
+                modifier = Modifier.height(14.dp)
+            )
+
+            if (dueDate.isNotBlank()) {
+
+                Text(
+                    text = "Due: ${displayBookingTime(dueDate)}",
+                    fontSize = 13.sp,
+                    color = dashboardNavy
+                )
+
+                Spacer(
+                    modifier = Modifier.height(10.dp)
+                )
+            }
+
+            if (paymentStatus.isNotBlank() &&
+                paymentStatus != "none"
+            ) {
+
+                StatusBadge(
+                    text = friendlyStatus(paymentStatus),
+                    positive = paymentStatus.equals(
+                        "paid",
+                        ignoreCase = true
+                    )
+                )
+
+                Spacer(
+                    modifier = Modifier.height(16.dp)
+                )
+
+            } else {
+
+                Text(
+                    text = "No rent has been assigned yet.",
+                    fontSize = 13.sp,
+                    color = dashboardMuted
+                )
+
+                Spacer(
+                    modifier = Modifier.height(14.dp)
+                )
+            }
+
+            OutlinedButton(
+                onClick = onPaymentsClick,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+
+                Text(
+                    text = "View My Payments",
+                    color = dashboardNavy
+                )
+            }
+
+            OutlinedButton(
+                onClick = onRentClick,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+
+                Text(
+                    text = "View Rent History",
+                    color = dashboardNavy
+                )
+            }
+        }
+    }
+}
+
+// =====================================================
+// EMPTY SECTION MESSAGE
+// =====================================================
+
+@Composable
+private fun EmptySectionMessage(
+    section: String
+) {
+
+    val icon = when (section) {
+
+        "Chores" -> ""
+
+        "Shared Groceries" -> ""
+
+        "Kitchen & Braai" -> ""
+
+        "Rent" -> ""
+
+        "Payments" -> ""
+
+        "Announcements" -> ""
+
+        else -> ""
+    }
+
+    val message = when (section) {
+
+        "Chores" ->
+            "No chores yet. Add a task to get started."
+
+        "Shared Groceries" ->
+            "Your shopping list is empty. Add something you need."
+
+        "Kitchen & Braai" ->
+            "No bookings yet. Reserve a time for the kitchen or braai."
+
+        "Rent" ->
+            "Your rent history will appear here."
+
+        "Payments" ->
+            "Your recorded payments will appear here."
+
+        "Announcements" ->
+            "No announcements have been shared yet."
+
+        else ->
+            "Nothing to display yet."
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(20.dp),
+
+        horizontalAlignment =
+            Alignment.CenterHorizontally
+    ) {
+
+        Text(
+            text = icon,
+            fontSize = 42.sp
+        )
+
+        Spacer(
+            modifier = Modifier.height(12.dp)
+        )
+
+        Text(
+            text = message,
+            textAlign = TextAlign.Center,
+            color = dashboardMuted,
+            fontSize = 14.sp
+        )
+    }
+}
+
+// =====================================================
+// USER-FRIENDLY SECTION RECORDS
+// =====================================================
+
+@Composable
+private fun SectionRecord(
+    item: JSONObject,
+    section: String,
+    onCompleteChore: (String) -> Unit,
+    onPurchaseGrocery: (String) -> Unit
+) {
+
+    val title = item.optString(
+        "title",
+        item.optString("description", "Untitled")
+    ).ifBlank { "Untitled" }
+
+    val id = item.optString("id", "")
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color.White
+        ),
+        elevation = CardDefaults.cardElevation(
+            defaultElevation = 1.dp
+        )
+    ) {
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+
+            verticalArrangement =
+                Arrangement.spacedBy(12.dp)
+        ) {
+
+            when (section) {
+
+                // =========================================
+                // CHORES
+                // =========================================
+
+                "Chores" -> {
+
+                    val completed = item.optString(
+                        "status",
+                        "pending"
+                    ).equals(
+                        "completed",
+                        ignoreCase = true
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+
+                        Text(
+                            text = if (completed) "" else "",
+                            fontSize = 26.sp
+                        )
+
+                        Spacer(
+                            modifier = Modifier.width(12.dp)
+                        )
+
+                        Column(
+                            modifier = Modifier.weight(1f)
+                        ) {
+
+                            Text(
+                                text = title,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = dashboardNavy
+                            )
+
+                            Spacer(
+                                modifier = Modifier.height(6.dp)
+                            )
+
+                            StatusBadge(
+                                text = if (completed) {
+                                    "Completed"
+                                } else {
+                                    "To do"
+                                },
+                                positive = completed
+                            )
+                        }
+                    }
+
+                    val dueDate = item.optString(
+                        "due_date",
+                        ""
+                    )
+
+                    if (
+                        dueDate.isNotBlank() &&
+                        dueDate != "null"
+                    ) {
+
+                        Text(
+                            text = "Due: ${displayBookingTime(dueDate)}",
+                            fontSize = 13.sp,
+                            color = dashboardMuted
+                        )
+                    }
+
+                    if (!completed) {
+
+                        Button(
+                            onClick = {
+                                if (id.isNotBlank()) {
+                                    onCompleteChore(id)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = dashboardGreen
+                            )
+                        ) {
+
+                            Text(" Mark as Completed")
+                        }
+                    }
+                }
+
+                // =========================================
+                // SHARED GROCERIES
+                // =========================================
+
+                "Shared Groceries" -> {
+
+                    val purchased =
+                        item.optBoolean("purchased", false)
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+
+                        Text(
+                            text = if (purchased) "" else "",
+                            fontSize = 26.sp
+                        )
+
+                        Spacer(
+                            modifier = Modifier.width(12.dp)
+                        )
+
+                        Column(
+                            modifier = Modifier.weight(1f)
+                        ) {
+
+                            Text(
+                                text = title,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = dashboardNavy
+                            )
+
+                            Spacer(
+                                modifier = Modifier.height(6.dp)
+                            )
+
+                            StatusBadge(
+                                text = if (purchased) {
+                                    "Purchased"
+                                } else {
+                                    "Still needed"
+                                },
+                                positive = purchased
+                            )
+                        }
+                    }
+
+                    if (!purchased) {
+
+                        OutlinedButton(
+                            onClick = {
+                                if (id.isNotBlank()) {
+                                    onPurchaseGrocery(id)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+
+                            Text(
+                                text = "Mark as Purchased",
+                                color = dashboardGreen
+                            )
+                        }
+                    }
+                }
+
+                // =========================================
+                // KITCHEN & BRAAI
+                // =========================================
+
+                "Kitchen & Braai" -> {
+
+                    val start = item.optString(
+                        "starts_at",
+                        ""
+                    )
+
+                    val end = item.optString(
+                        "ends_at",
+                        ""
+                    )
+
+                    val bookingStatus =
+                        getBookingStatus(start, end)
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+
+                        Text(
+                            text = "",
+                            fontSize = 28.sp
+                        )
+
+                        Spacer(
+                            modifier = Modifier.width(12.dp)
+                        )
+
+                        Column(
+                            modifier = Modifier.weight(1f)
+                        ) {
+
+                            Text(
+                                text = title,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = dashboardNavy
+                            )
+
+                            Spacer(
+                                modifier = Modifier.height(6.dp)
+                            )
+
+                            StatusBadge(
+                                text = bookingStatus,
+                                positive = bookingStatus == "Upcoming" ||
+                                        bookingStatus == "In progress"
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(
+                        color = dashboardBackground
+                    )
+
+                    if (start.isNotBlank()) {
+
+                        Text(
+                            text = "Starts",
+                            fontSize = 12.sp,
+                            color = dashboardMuted
+                        )
+
+                        Text(
+                            text = displayBookingTime(start),
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = dashboardNavy
+                        )
+                    }
+
+                    if (end.isNotBlank()) {
+
+                        Text(
+                            text = "Ends",
+                            fontSize = 12.sp,
+                            color = dashboardMuted
+                        )
+
+                        Text(
+                            text = displayBookingTime(end),
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = dashboardNavy
+                        )
+                    }
+                }
+
+                // =========================================
+                // ANNOUNCEMENTS
+                // =========================================
+
+                "Announcements" -> {
+
+                    Text(
+                        text = "$title",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = dashboardNavy
+                    )
+
+                    val message = item.optString(
+                        "body",
+                        ""
+                    )
+
+                    if (message.isNotBlank()) {
+
+                        Text(
+                            text = message,
+                            fontSize = 14.sp,
+                            color = Color.DarkGray
+                        )
+                    }
+
+                    val date = item.optString(
+                        "created_at",
+                        ""
+                    )
+
+                    if (date.isNotBlank()) {
+
+                        Text(
+                            text = displayBookingTime(date),
+                            fontSize = 12.sp,
+                            color = dashboardMuted
+                        )
+                    }
+                }
+
+                // =========================================
+                // RENT HISTORY
+                // =========================================
+
+                "Rent" -> {
+
+                    val amount = item.optDouble(
+                        "amount_due",
+                        0.0
+                    )
+
+                    val status = item.optString(
+                        "status",
+                        "unpaid"
+                    )
+
+                    Text(
+                        text = "Rent",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = dashboardNavy
+                    )
+
+                    Text(
+                        text = formatRentMoney(amount),
+                        fontSize = 23.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = dashboardNavy
+                    )
+
+                    StatusBadge(
+                        text = friendlyStatus(status),
+                        positive = status.equals(
+                            "paid",
+                            ignoreCase = true
+                        )
+                    )
+
+                    val date = item.optString(
+                        "due_date",
+                        ""
+                    )
+
+                    if (date.isNotBlank()) {
+
+                        Text(
+                            text = "Due: ${displayBookingTime(date)}",
+                            color = dashboardMuted,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+
+                // =========================================
+                // PAYMENTS
+                // =========================================
+
+                "Payments" -> {
+
+                    val amount = item.optDouble(
+                        "amount",
+                        0.0
+                    )
+
+                    Text(
+                        text = "Payment Recorded",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = dashboardNavy
+                    )
+
+                    Text(
+                        text = formatRentMoney(amount),
+                        fontSize = 23.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = dashboardGreen
+                    )
+
+                    val paymentDate = item.optString(
+                        "payment_date",
+                        ""
+                    )
+
+                    if (paymentDate.isNotBlank()) {
+
+                        Text(
+                            text = "${displayBookingTime(paymentDate)}",
+                            color = dashboardMuted,
+                            fontSize = 13.sp
+                        )
+                    }
+
+                    val reference = item.optString(
+                        "reference",
+                        ""
+                    )
+
+                    if (reference.isNotBlank()) {
+
+                        Text(
+                            text = "Reference: $reference",
+                            fontSize = 13.sp,
+                            color = dashboardMuted
+                        )
+                    }
+                }
+
+                // =========================================
+                // EXPENSES
+                // =========================================
+
+                "Expenses", "Expense splits" -> {
+
+                    val amount = item.optDouble(
+                        "amount",
+                        0.0
+                    )
+
+                    Text(
+                        text = "$title",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = dashboardNavy
+                    )
+
+                    Text(
+                        text = formatRentMoney(amount),
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = dashboardOrange
+                    )
+                }
+
+                // =========================================
+                // OTHER RECORDS
+                // =========================================
+
+                else -> {
+
+                    Text(
+                        text = title,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = dashboardNavy
+                    )
+
+                    val description = item.optString(
+                        "body",
+                        item.optString("description", "")
+                    )
+
+                    if (description.isNotBlank()) {
+
+                        Text(
+                            text = description,
+                            color = Color.DarkGray
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =====================================================
+// FRIENDLY STATUS BADGE
+// =====================================================
+
+@Composable
+private fun StatusBadge(
+    text: String,
+    positive: Boolean
+) {
+
+    val background = if (positive) {
+        Color(0xFFE5F5EC)
+    } else {
+        Color(0xFFFFF2E8)
+    }
+
+    val foreground = if (positive) {
+        dashboardGreen
+    } else {
+        dashboardOrange
+    }
+
+    Surface(
+        color = background,
+        shape = RoundedCornerShape(50)
+    ) {
+
+        Text(
+            text = text,
+            modifier = Modifier.padding(
+                horizontal = 12.dp,
+                vertical = 6.dp
+            ),
+            color = foreground,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+// =====================================================
+// FRIENDLY STATUS TEXT
+// =====================================================
+
+private fun friendlyStatus(
+    status: String
+): String {
+
+    return when (status.lowercase(Locale.US)) {
+
+        "paid" -> "Paid"
+
+        "partial" -> "Partially Paid"
+
+        "unpaid" -> "Payment Outstanding"
+
+        "completed" -> "Completed"
+
+        "pending" -> "Pending"
+
+        "none" -> "Not Available"
+
+        else -> status
+            .replace("_", " ")
+            .replaceFirstChar {
+                it.uppercase()
+            }
+    }
+}
+
+// =====================================================
+// BOOKING STATUS
+// =====================================================
+
+private fun getBookingStatus(
+    start: String,
+    end: String
+): String {
+
+    val startTime = parseBookingTimestamp(start)
+    val endTime = parseBookingTimestamp(end)
+
+    if (startTime == null || endTime == null) {
+        return "Scheduled"
+    }
+
+    val now = System.currentTimeMillis()
+
+    return when {
+
+        now < startTime -> "Upcoming"
+
+        now >= startTime && now < endTime -> "In progress"
+
+        else -> "Completed"
+    }
+}
+
+// =====================================================
+// SOUTH AFRICAN CURRENCY
+// =====================================================
+
+private fun formatRentMoney(
+    amount: Double
+): String {
+
+    val formatter = NumberFormat.getCurrencyInstance(
+        Locale.forLanguageTag("en-ZA")
+    )
+
+    return formatter.format(amount)
+}
+
+// =====================================================
+// BOOKING DATE AND TIME PICKER
+// ANDROID API 24 COMPATIBLE
+// =====================================================
+
+private fun showBookingDateTimePicker(
+    context: Context,
+    onSelected: (String) -> Unit
+) {
+
+    val now = Calendar.getInstance()
+
+    DatePickerDialog(
+        context,
+
+        { _, year, month, day ->
+
+            TimePickerDialog(
+                context,
+
+                { _, hour, minute ->
+
+                    val selectedCalendar =
+                        Calendar.getInstance().apply {
+
+                            set(
+                                Calendar.YEAR,
+                                year
+                            )
+
+                            set(
+                                Calendar.MONTH,
+                                month
+                            )
+
+                            set(
+                                Calendar.DAY_OF_MONTH,
+                                day
+                            )
+
+                            set(
+                                Calendar.HOUR_OF_DAY,
+                                hour
+                            )
+
+                            set(
+                                Calendar.MINUTE,
+                                minute
+                            )
+
+                            set(
+                                Calendar.SECOND,
+                                0
+                            )
+
+                            set(
+                                Calendar.MILLISECOND,
+                                0
+                            )
+                        }
+
+                    val formatter = SimpleDateFormat(
+                        "yyyy-MM-dd'T'HH:mm:ssXXX",
+                        Locale.US
+                    )
+
+                    formatter.timeZone =
+                        TimeZone.getDefault()
+
+                    val isoDateTime =
+                        formatter.format(
+                            selectedCalendar.time
+                        )
+
+                    onSelected(isoDateTime)
+                },
+
+                now.get(Calendar.HOUR_OF_DAY),
+
+                now.get(Calendar.MINUTE),
+
+                true
+
+            ).show()
+        },
+
+        now.get(Calendar.YEAR),
+
+        now.get(Calendar.MONTH),
+
+        now.get(Calendar.DAY_OF_MONTH)
+
+    ).show()
+}
+
+// =====================================================
+// PARSE TIMESTAMP
+// ANDROID API 24 COMPATIBLE
+// =====================================================
+
+private fun parseBookingTimestamp(
+    iso: String
+): Long? {
+
+    if (iso.isBlank() || iso == "null") {
+        return null
+    }
+
+    return try {
+
+        val normalized = iso.replace(
+            Regex("\\.(\\d+)(?=Z|[+-]\\d{2}:?\\d{2}$)")
+        ) { match ->
+
+            "." + match.groupValues[1]
+                .padEnd(3, '0')
+                .take(3)
+        }
+
+        val patterns = listOf(
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+            "yyyy-MM-dd'T'HH:mm:ssXXX",
+            "yyyy-MM-dd"
+        )
+
+        var parsedTime: Long? = null
+
+        for (pattern in patterns) {
+
+            try {
+
+                val formatter = SimpleDateFormat(
+                    pattern,
+                    Locale.US
+                )
+
+                formatter.isLenient = false
+
+                val date = formatter.parse(normalized)
+
+                if (date != null) {
+
+                    parsedTime = date.time
+                    break
+                }
+
+            } catch (_: Exception) {
+
+                // Try the next format.
+            }
+        }
+
+        parsedTime
+
+    } catch (_: Exception) {
+
+        null
+    }
+}
+
+// =====================================================
+// DISPLAY READABLE DATE AND TIME
+// ANDROID API 24 COMPATIBLE
+// =====================================================
+
+private fun displayBookingTime(
+    iso: String
+): String {
+
+    if (iso.isBlank() || iso == "null") {
+        return "Not available"
+    }
+
+    return try {
+
+        val timestamp = parseBookingTimestamp(iso)
+
+        if (timestamp == null) {
+
+            iso
+
+        } else {
+
+            val isDateOnly =
+                Regex("^\\d{4}-\\d{2}-\\d{2}$")
+                    .matches(iso)
+
+            val outputPattern = if (isDateOnly) {
+                "dd MMM yyyy"
+            } else {
+                "dd MMM yyyy, HH:mm"
+            }
+
+            val outputFormatter = SimpleDateFormat(
+                outputPattern,
+                Locale.ENGLISH
+            )
+
+            outputFormatter.timeZone =
+                TimeZone.getDefault()
+
+            outputFormatter.format(
+                Date(timestamp)
+            )
+        }
+
+    } catch (_: Exception) {
+
+        iso
+    }
+}
+

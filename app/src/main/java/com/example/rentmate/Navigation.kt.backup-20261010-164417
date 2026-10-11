@@ -1,0 +1,233 @@
+package com.example.rentmate
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+
+@Composable
+fun MainRentMateNavigation() {
+
+    val context = LocalContext.current
+
+    // Restore the user's saved login session.
+    val restored = remember {
+        RentMateSessionStore.restore(context)
+    }
+
+    val navController = rememberNavController()
+
+    NavHost(
+        navController = navController,
+        startDestination = if (restored) "dashboard" else "welcome"
+    ) {
+
+        // =====================================================
+        // WELCOME SCREEN
+        // =====================================================
+
+        composable("welcome") {
+
+            WelcomeScreen(
+                onGetStartedClick = {
+                    navController.navigate("signup")
+                },
+
+                onLoginClick = {
+                    navController.navigate("login")
+                }
+            )
+        }
+
+        // =====================================================
+        // SIGN UP SCREEN
+        // =====================================================
+
+        composable("signup") {
+
+            SignUpScreen(
+                onSignUpSuccess = {
+
+                    // Registration completed.
+                    // The tenant must log in.
+
+                    navController.navigate("login") {
+
+                        popUpTo("signup") {
+                            inclusive = true
+                        }
+
+                        launchSingleTop = true
+                    }
+                },
+
+                onLoginClick = {
+
+                    navController.navigate("login") {
+
+                        popUpTo("signup") {
+                            inclusive = true
+                        }
+
+                        launchSingleTop = true
+                    }
+                }
+            )
+        }
+
+        // =====================================================
+        // LOGIN SCREEN
+        // =====================================================
+
+        composable("login") {
+
+            LoginScreen(
+                onLoginSuccess = {
+
+                    // Continue only if a valid access token exists.
+
+                    if (!RentMateSession.accessToken.isNullOrBlank()) {
+
+                        RentMateSessionStore.save(context)
+
+                        navController.navigate("dashboard") {
+
+                            popUpTo("welcome") {
+                                inclusive = true
+                            }
+
+                            launchSingleTop = true
+                        }
+                    }
+                },
+
+                onSignUpClick = {
+                    navController.navigate("signup")
+                }
+            )
+        }
+
+        // =====================================================
+        // TENANT DASHBOARD
+        // =====================================================
+
+        composable("dashboard") {
+
+            DashboardScreen(
+
+                // Open profile
+                onProfileClick = {
+                    navController.navigate("profile")
+                },
+
+                // Open settings
+                onSettingsClick = {
+                    navController.navigate("settings")
+                },
+
+                // Log out
+                onLogoutClick = {
+
+                    RentMateSessionStore.clear(context)
+
+                    navController.navigate("login") {
+
+                        popUpTo("dashboard") {
+                            inclusive = true
+                        }
+
+                        launchSingleTop = true
+                    }
+                },
+
+                // FIX: FIND ACCOMMODATION NAVIGATION
+                onFindAccommodationClick = {
+
+                    navController.navigate("accommodation_details") {
+
+                        launchSingleTop = true
+                    }
+                }
+            )
+        }
+
+        // =====================================================
+        // SETTINGS SCREEN
+        // =====================================================
+
+        composable("settings") {
+
+            SettingsScreen(
+
+                onBackClick = {
+                    navController.popBackStack()
+                },
+
+                onLogoutClick = {
+
+                    RentMateSessionStore.clear(context)
+
+                    navController.navigate("login") {
+
+                        popUpTo("dashboard") {
+                            inclusive = true
+                        }
+
+                        launchSingleTop = true
+                    }
+                }
+            )
+        }
+
+        // =====================================================
+        // PROFILE SCREEN
+        // =====================================================
+
+        composable("profile") {
+
+            ProfileScreen(
+
+                onBackClick = {
+                    navController.popBackStack()
+                },
+
+                onLogoutClick = {
+
+                    RentMateSessionStore.clear(context)
+
+                    navController.navigate("login") {
+
+                        popUpTo("dashboard") {
+                            inclusive = true
+                        }
+
+                        launchSingleTop = true
+                    }
+                }
+            )
+        }
+
+        // =====================================================
+        // ACCOMMODATION DETAILS SCREEN
+        // =====================================================
+
+        composable("accommodation_details") {
+
+            AccommodationPageScreen(
+
+                onBack = {
+                    navController.popBackStack()
+                },
+
+                onRequestJoin = {
+
+                    // Future feature:
+                    // Connect accommodation requests to the backend.
+                }
+            )
+        }
+    }
+}

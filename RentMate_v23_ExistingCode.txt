@@ -1,0 +1,2001 @@
+﻿RENTMATE V2.3 - EXISTING ANDROID CODE
+
+========== RentMateRepository.kt ==========
+
+package com.example.rentmate
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
+import java.net.URL
+import java.time.OffsetDateTime
+import java.util.Locale
+
+class RentMateRepository {
+
+    // =====================================================
+    // API REQUEST HANDLER
+    // =====================================================
+
+    private fun request(
+        path: String,
+        method: String = "GET",
+        body: JSONObject? = null,
+        authenticated: Boolean = true
+    ): String {
+
+        val base = RentMateApiConfig.BASE_URL.trimEnd('/')
+
+        require(
+            base.startsWith("https://") &&
+                    !base.contains("YOUR-")
+        ) {
+            "Configure your Render API URL."
+        }
+
+        val connection = URL(base + path)
+            .openConnection() as HttpURLConnection
+
+        try {
+
+            connection.requestMethod = method
+
+            connection.connectTimeout = 45000
+            connection.readTimeout = 90000
+
+            connection.setRequestProperty(
+                "Accept",
+                "application/json"
+            )
+
+            // Attach login token to protected requests
+            if (authenticated) {
+
+                val token = RentMateSession.accessToken
+                    ?.takeIf { it.isNotBlank() }
+                    ?: throw IllegalStateException(
+                        "Please sign in first."
+                    )
+
+                connection.setRequestProperty(
+                    "Authorization",
+                    "Bearer $token"
+                )
+            }
+
+            // Send JSON data when required
+            if (body != null) {
+
+                connection.doOutput = true
+
+                connection.setRequestProperty(
+                    "Content-Type",
+                    "application/json"
+                )
+
+                connection.outputStream.use { output ->
+
+                    output.write(
+                        body.toString().toByteArray(
+                            Charsets.UTF_8
+                        )
+                    )
+                }
+            }
+
+            val code = connection.responseCode
+
+            val stream = if (code in 200..299) {
+                connection.inputStream
+            } else {
+                connection.errorStream
+            }
+
+            val response = stream
+                ?.bufferedReader()
+                ?.use { it.readText() }
+                ?: ""
+
+            // =====================================================
+            // ERROR HANDLING
+            // =====================================================
+
+            if (code !in 200..299) {
+
+                val detail = runCatching {
+
+                    val json = JSONObject(response)
+
+                    json.optString(
+                        "detail",
+                        json.optString(
+                            "error",
+                            json.optString(
+                                "message",
+                                "Request failed"
+                            )
+                        )
+                    )
+
+                }.getOrDefault("Request failed")
+
+                val message = when {
+
+                    code == 401 && path == "/auth/login" ->
+                        "Invalid email or password."
+
+                    code == 401 ->
+                        "Your session has expired. Please sign in again."
+
+                    code == 403 ->
+                        "You do not have permission to perform this action."
+
+                    code == 404 ->
+                        "Not found: $detail"
+
+                    code == 409 ->
+                        detail
+
+                    code == 400 ->
+                        detail
+
+                    code >= 500 ->
+                        "Server error ($code): $detail"
+
+                    else ->
+                        detail
+                }
+
+                throw IllegalStateException(message)
+            }
+
+            return response
+
+        } catch (e: SocketTimeoutException) {
+
+            throw IllegalStateException(
+                "The server took too long to respond. " +
+                        "Please check your connection and try again."
+            )
+
+        } finally {
+
+            connection.disconnect()
+        }
+    }
+
+    // =====================================================
+    // USER PROFILE
+    // =====================================================
+
+    suspend fun getProfile(): JSONObject =
+        withContext(Dispatchers.IO) {
+
+            JSONObject(
+                request("/me")
+            )
+        }
+
+    suspend fun updateProfile(
+        name: String,
+        phone: String
+    ): JSONObject = withContext(Dispatchers.IO) {
+
+        val payload = JSONObject()
+            .put("full_name", name.trim())
+            .put("phone", phone.trim())
+
+        JSONObject(
+            request(
+                path = "/me",
+                method = "PATCH",
+                body = payload
+            )
+        )
+    }
+
+    suspend fun changePassword(
+        current: String,
+        new: String
+    ): Unit = withContext(Dispatchers.IO) {
+
+        val payload = JSONObject()
+            .put("current_password", current)
+            .put("new_password", new)
+
+        request(
+            path = "/me/password",
+            method = "POST",
+            body = payload
+        )
+
+        Unit
+    }
+
+    // =====================================================
+    // REGISTRATION
+    // =====================================================
+
+    suspend fun signUp(
+        email: String,
+        password: String,
+        fullName: String,
+        phone: String
+    ): Boolean = withContext(Dispatchers.IO) {
+
+        val payload = JSONObject()
+            .put("email", email.trim())
+            .put("password", password)
+            .put("full_name", fullName.trim())
+            .put("phone", phone.trim())
+
+        request(
+            path = "/auth/register",
+            method = "POST",
+            body = payload,
+            authenticated = false
+        )
+
+        true
+    }
+
+    // =====================================================
+    // LOGIN
+    // =====================================================
+
+    suspend fun signIn(
+        email: String,
+        password: String
+    ) = withContext(Dispatchers.IO) {
+
+        val payload = JSONObject()
+            .put("email", email.trim())
+            .put("password", password)
+
+        val result = JSONObject(
+            request(
+                path = "/auth/login",
+                method = "POST",
+                body = payload,
+                authenticated = false
+            )
+        )
+
+        RentMateSession.accessToken =
+            result.getString("access_token")
+
+        RentMateSession.userId =
+            result.getJSONObject("user")
+                .getString("id")
+    }
+
+    // =====================================================
+    // DASHBOARD
+    // =====================================================
+
+    suspend fun getDashboardJson(): JSONObject =
+        withContext(Dispatchers.IO) {
+
+            JSONObject(
+                request("/dashboard")
+            )
+        }
+
+    // =====================================================
+    // INDIVIDUAL TENANT RENT SUMMARY
+    // =====================================================
+
+    suspend fun getRentSummary(): RentSummary =
+        withContext(Dispatchers.IO) {
+
+            val data = JSONObject(
+                request("/dashboard")
+            )
+
+            // Tenant has not yet been assigned a household
+            if (!data.optBoolean("assigned", false)) {
+
+                return@withContext RentSummary(
+                    message = data.optString(
+                        "message",
+                        "Awaiting property assignment"
+                    )
+                )
+            }
+
+            val due = data.optDouble(
+                "rent_due",
+                0.0
+            )
+
+            val paid = data.optDouble(
+                "amount_paid",
+                0.0
+            )
+
+            RentSummary(
+                amountDue = due,
+                amountPaid = paid,
+                outstanding = data.optDouble(
+                    "outstanding",
+                    (due - paid).coerceAtLeast(0.0)
+                ),
+                dueDate = data.optString(
+                    "due_date",
+                    ""
+                ),
+                status = data.optString(
+                    "payment_status",
+                    "unpaid"
+                )
+            )
+        }
+
+    // =====================================================
+    // INDIVIDUAL RENT HISTORY
+    // =====================================================
+
+    suspend fun getRentHistory(): JSONArray =
+        withContext(Dispatchers.IO) {
+
+            JSONArray(
+                request("/my/rent")
+            )
+        }
+
+    // =====================================================
+    // INDIVIDUAL PAYMENT HISTORY
+    // =====================================================
+
+    suspend fun getPayments(): JSONArray =
+        withContext(Dispatchers.IO) {
+
+            JSONArray(
+                request("/my/payments")
+            )
+        }
+
+    // =====================================================
+    // HOUSEMATES
+    // =====================================================
+
+    suspend fun getHousemates(): JSONArray =
+        withContext(Dispatchers.IO) {
+
+            JSONArray(
+                request("/my/housemates")
+            )
+        }
+
+    // =====================================================
+    // CHORES
+    // =====================================================
+
+    suspend fun getChores(): JSONArray =
+        withContext(Dispatchers.IO) {
+
+            JSONArray(
+                request("/my/chores")
+            )
+        }
+
+    suspend fun createChore(
+        title: String
+    ): Unit = withContext(Dispatchers.IO) {
+
+        require(title.isNotBlank()) {
+            "Please enter a chore title."
+        }
+
+        request(
+            path = "/my/chores",
+            method = "POST",
+            body = JSONObject()
+                .put("title", title.trim())
+        )
+
+        Unit
+    }
+
+    suspend fun completeChore(
+        id: String
+    ): JSONObject = withContext(Dispatchers.IO) {
+
+        JSONObject(
+            request(
+                path = "/my/chores/$id/complete",
+                method = "PATCH"
+            )
+        )
+    }
+
+    // =====================================================
+    // SHARED GROCERIES
+    // =====================================================
+
+    suspend fun getGroceries(): JSONArray =
+        withContext(Dispatchers.IO) {
+
+            JSONArray(
+                request("/my/groceries")
+            )
+        }
+
+    suspend fun addGrocery(
+        title: String
+    ): Unit = withContext(Dispatchers.IO) {
+
+        require(title.isNotBlank()) {
+            "Please enter a grocery item."
+        }
+
+        require(title.trim().length <= 150) {
+            "The grocery item name is too long."
+        }
+
+        val payload = JSONObject()
+            .put("title", title.trim())
+
+        request(
+            path = "/my/groceries",
+            method = "POST",
+            body = payload
+        )
+
+        Unit
+    }
+
+    suspend fun purchaseGrocery(
+        id: String
+    ): Unit = withContext(Dispatchers.IO) {
+
+        require(id.isNotBlank()) {
+            "Invalid grocery item."
+        }
+
+        request(
+            path = "/my/groceries/$id/purchased",
+            method = "PATCH"
+        )
+
+        Unit
+    }
+
+    // =====================================================
+    // KITCHEN & BRAAI BOOKINGS
+    // =====================================================
+
+    suspend fun getBookings(): JSONArray =
+        withContext(Dispatchers.IO) {
+
+            JSONArray(
+                request("/my/bookings")
+            )
+        }
+
+    suspend fun addBooking(
+        title: String,
+        start: String,
+        end: String
+    ): Unit = withContext(Dispatchers.IO) {
+
+        require(title.isNotBlank()) {
+            "Please enter a booking title."
+        }
+
+        val startDate = try {
+            OffsetDateTime.parse(start)
+        } catch (e: Exception) {
+            throw IllegalArgumentException(
+                "Please enter a valid start date and time."
+            )
+        }
+
+        val endDate = try {
+            OffsetDateTime.parse(end)
+        } catch (e: Exception) {
+            throw IllegalArgumentException(
+                "Please enter a valid end date and time."
+            )
+        }
+
+        require(endDate.toInstant().isAfter(startDate.toInstant())) {
+            "The end time must be after the start time."
+        }
+
+        val payload = JSONObject()
+            .put("title", title.trim())
+            .put("starts_at", startDate.toString())
+            .put("ends_at", endDate.toString())
+
+        request(
+            path = "/my/bookings",
+            method = "POST",
+            body = payload
+        )
+
+        Unit
+    }
+
+    // =====================================================
+    // ANNOUNCEMENTS
+    // =====================================================
+
+    suspend fun getAnnouncements(): JSONArray =
+        withContext(Dispatchers.IO) {
+
+            JSONArray(
+                request("/my/announcements")
+            )
+        }
+
+    // =====================================================
+    // HOUSEHOLD EXPENSES
+    // =====================================================
+
+    suspend fun getExpenses(): JSONArray =
+        withContext(Dispatchers.IO) {
+
+            JSONArray(
+                request("/my/expenses")
+            )
+        }
+
+    suspend fun getExpenseSplits(): JSONArray =
+        withContext(Dispatchers.IO) {
+
+            JSONArray(
+                request("/my/expense-splits")
+            )
+        }
+
+    suspend fun addExpense(
+        householdId: String,
+        title: String,
+        amount: Double
+    ): JSONObject = withContext(Dispatchers.IO) {
+
+        require(title.isNotBlank()) {
+            "Please enter an expense title."
+        }
+
+        require(amount.isFinite() && amount > 0) {
+            "Please enter a valid amount."
+        }
+
+        val payload = JSONObject()
+            .put("household_id", householdId)
+            .put("title", title.trim())
+            .put("amount", amount)
+
+        JSONObject(
+            request(
+                path = "/households/$householdId/expenses",
+                method = "POST",
+                body = payload
+            )
+        )
+    }
+}
+
+// =====================================================
+// RENT SUMMARY MODEL
+// =====================================================
+
+data class RentSummary(
+
+    val amountDue: Double = 0.0,
+
+    val amountPaid: Double = 0.0,
+
+    val outstanding: Double = 0.0,
+
+    val dueDate: String = "",
+
+    val status: String = "",
+
+    val message: String = ""
+
+) {
+
+    fun money(amount: Double): String {
+
+        return "R" + String.format(
+            Locale.US,
+            "%,.2f",
+            amount
+        )
+    }
+}
+
+========== AlarmScheduler.kt ==========
+
+package com.example.rentmate
+
+import android.app.AlarmManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import java.util.Calendar
+
+object AlarmScheduler {
+
+    fun scheduleAlarm(
+        context: Context,
+        alarmId: Long,
+        title: String,
+        time: String
+    ) {
+
+        // Split time such as "07:30"
+        val parts = time.split(":")
+
+        if (parts.size != 2) {
+            return
+        }
+
+        val hour = parts[0].toIntOrNull() ?: return
+        val minute = parts[1].toIntOrNull() ?: return
+
+        // Check that the time is valid
+        if (hour !in 0..23 || minute !in 0..59) {
+            return
+        }
+
+        val calendar = Calendar.getInstance().apply {
+
+            set(Calendar.HOUR_OF_DAY, hour)
+            set(Calendar.MINUTE, minute)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+
+            // If the selected time has already passed,
+            // schedule the alarm for tomorrow.
+            if (timeInMillis <= System.currentTimeMillis()) {
+                add(Calendar.DAY_OF_YEAR, 1)
+            }
+        }
+
+        // Intent that will be sent to our AlarmReceiver
+        val intent = Intent(
+            context,
+            RentMateAlarmReceiver::class.java
+        ).apply {
+
+            putExtra("alarm_id", alarmId)
+            putExtra("alarm_title", title)
+        }
+
+        // Unique PendingIntent for this alarm
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            alarmId.toInt(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or
+                    PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val alarmManager =
+            context.getSystemService(
+                Context.ALARM_SERVICE
+            ) as AlarmManager
+
+        /*
+         * Android 12+ requires permission for exact alarms.
+         */
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+
+            if (!alarmManager.canScheduleExactAlarms()) {
+                return
+            }
+        }
+
+        // Schedule the alarm
+        alarmManager.setExactAndAllowWhileIdle(
+            AlarmManager.RTC_WAKEUP,
+            calendar.timeInMillis,
+            pendingIntent
+        )
+    }
+
+    fun cancelAlarm(
+        context: Context,
+        alarmId: Long
+    ) {
+
+        val intent = Intent(
+            context,
+            RentMateAlarmReceiver::class.java
+        )
+
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            alarmId.toInt(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or
+                    PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val alarmManager =
+            context.getSystemService(
+                Context.ALARM_SERVICE
+            ) as AlarmManager
+
+        alarmManager.cancel(pendingIntent)
+    }
+}
+
+
+
+========== RentMateAlarmReceiver.kt ==========
+
+package com.example.rentmate
+
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.RingtoneManager
+import android.os.Build
+
+class RentMateAlarmReceiver : BroadcastReceiver() {
+
+    companion object {
+        private const val CHANNEL_ID = "rentmate_alarm_channel"
+        private const val CHANNEL_NAME = "RentMate Alarms"
+    }
+
+    override fun onReceive(
+        context: Context,
+        intent: Intent
+    ) {
+
+        val alarmTitle =
+            intent.getStringExtra("alarm_title")
+                ?: "RentMate Reminder"
+
+        createNotificationChannel(context)
+
+        val notificationManager =
+            context.getSystemService(
+                Context.NOTIFICATION_SERVICE
+            ) as NotificationManager
+
+        // Alarm sound
+        val soundUri =
+            RingtoneManager.getDefaultUri(
+                RingtoneManager.TYPE_ALARM
+            )
+
+        /*
+         * Open the RentMate app when the
+         * user taps the notification.
+         */
+        val launchIntent =
+            context.packageManager.getLaunchIntentForPackage(
+                context.packageName
+            )
+
+        val pendingIntent =
+            if (launchIntent != null) {
+
+                PendingIntent.getActivity(
+                    context,
+                    alarmTitle.hashCode(),
+                    launchIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or
+                            PendingIntent.FLAG_IMMUTABLE
+                )
+
+            } else {
+                null
+            }
+
+        /*
+         * Build the notification.
+         *
+         * Notification.Builder is used for
+         * newer Android versions.
+         */
+        val builder =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
+                android.app.Notification.Builder(
+                    context,
+                    CHANNEL_ID
+                )
+
+            } else {
+
+                @Suppress("DEPRECATION")
+                android.app.Notification.Builder(context)
+            }
+
+        builder
+            .setSmallIcon(
+                android.R.drawable.ic_lock_idle_alarm
+            )
+            .setContentTitle(
+                "🔔 RentMate Alarm"
+            )
+            .setContentText(
+                alarmTitle
+            )
+            .setPriority(
+                android.app.Notification.PRIORITY_MAX
+            )
+            .setCategory(
+                android.app.Notification.CATEGORY_ALARM
+            )
+            .setSound(soundUri)
+            .setAutoCancel(true)
+
+        if (pendingIntent != null) {
+            builder.setContentIntent(pendingIntent)
+        }
+
+        /*
+         * Android 13+ requires notification permission.
+         */
+        if (
+            Build.VERSION.SDK_INT < 33 ||
+            context.checkSelfPermission(
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+
+            notificationManager.notify(
+                alarmTitle.hashCode(),
+                builder.build()
+            )
+        }
+    }
+
+    private fun createNotificationChannel(
+        context: Context
+    ) {
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
+            val soundUri =
+                RingtoneManager.getDefaultUri(
+                    RingtoneManager.TYPE_ALARM
+                )
+
+            val audioAttributes =
+                android.media.AudioAttributes.Builder()
+                    .setUsage(
+                        android.media.AudioAttributes.USAGE_ALARM
+                    )
+                    .build()
+
+            val channel =
+                NotificationChannel(
+                    CHANNEL_ID,
+                    CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_HIGH
+                )
+
+            channel.setSound(
+                soundUri,
+                audioAttributes
+            )
+
+            channel.enableVibration(true)
+
+            val notificationManager =
+                context.getSystemService(
+                    Context.NOTIFICATION_SERVICE
+                ) as NotificationManager
+
+            notificationManager.createNotificationChannel(
+                channel
+            )
+        }
+    }
+}
+
+
+
+========== Navigation.kt ==========
+
+package com.example.rentmate
+
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+
+@Composable
+fun MainRentMateNavigation() {
+
+    val context = LocalContext.current
+
+    val restored = remember {
+        RentMateSessionStore.restore(context)
+    }
+
+    val navController = rememberNavController()
+
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = backStackEntry?.destination?.route
+
+    val mainTabs = listOf(
+        "dashboard",
+        "accommodation_details",
+        "activity",
+        "profile"
+    )
+
+    fun navigateToTab(route: String) {
+        if (route == currentRoute) return
+
+        navController.navigate(route) {
+            popUpTo("dashboard") {
+                saveState = true
+            }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+
+    fun logout() {
+        RentMateSessionStore.clear(context)
+
+        navController.navigate("login") {
+            popUpTo(navController.graph.id) {
+                inclusive = true
+            }
+            launchSingleTop = true
+        }
+    }
+
+    Scaffold(
+        bottomBar = {
+            if (currentRoute in mainTabs) {
+                RentMateBottomBar(
+                    currentRoute = currentRoute,
+                    onNavigate = { route ->
+                        navigateToTab(route)
+                    }
+                )
+            }
+        }
+    ) { innerPadding ->
+
+        NavHost(
+            navController = navController,
+            startDestination = if (restored) {
+                "dashboard"
+            } else {
+                "welcome"
+            },
+            modifier = Modifier.padding(innerPadding)
+        ) {
+
+            // ==========================================
+            // WELCOME
+            // ==========================================
+
+            composable("welcome") {
+
+                WelcomeScreen(
+                    onGetStartedClick = {
+                        navController.navigate("signup")
+                    },
+                    onLoginClick = {
+                        navController.navigate("login")
+                    }
+                )
+            }
+
+            // ==========================================
+            // SIGN UP
+            // ==========================================
+
+            composable("signup") {
+
+                SignUpScreen(
+                    onSignUpSuccess = {
+                        navController.navigate("login") {
+                            popUpTo("signup") {
+                                inclusive = true
+                            }
+                            launchSingleTop = true
+                        }
+                    },
+                    onLoginClick = {
+                        navController.navigate("login") {
+                            popUpTo("signup") {
+                                inclusive = true
+                            }
+                            launchSingleTop = true
+                        }
+                    }
+                )
+            }
+
+            // ==========================================
+            // LOGIN
+            // ==========================================
+
+            composable("login") {
+
+                LoginScreen(
+                    onLoginSuccess = {
+
+                        if (!RentMateSession.accessToken.isNullOrBlank()) {
+
+                            RentMateSessionStore.save(context)
+
+                            navController.navigate("dashboard") {
+                                popUpTo(navController.graph.id) {
+                                    inclusive = true
+                                }
+                                launchSingleTop = true
+                            }
+                        }
+                    },
+                    onSignUpClick = {
+                        navController.navigate("signup")
+                    }
+                )
+            }
+
+            // ==========================================
+            // DASHBOARD
+            // ==========================================
+
+            composable("dashboard") {
+
+                DashboardScreen(
+                    onProfileClick = {
+                        navigateToTab("profile")
+                    },
+                    onSettingsClick = {
+                        navController.navigate("settings")
+                    },
+                    onLogoutClick = {
+                        logout()
+                    },
+                    onFindAccommodationClick = {
+                        navigateToTab("accommodation_details")
+                    },
+                    onFeatureNavigate = { route ->
+                        navController.navigate(route) {
+                            launchSingleTop = true
+                        }
+                    }
+                )
+            }
+
+            // ==========================================
+            // EXPLORE
+            // ==========================================
+
+            composable("accommodation_details") {
+
+                AccommodationPageScreen(
+                    onBack = {
+                        navController.popBackStack()
+                    },
+                    onRequestJoin = {
+                        // Backend integration comes later.
+                    }
+                )
+            }
+
+            // ==========================================
+            // ACTIVITY
+            // ==========================================
+
+            composable("activity") {
+
+                RentMateActivityScreen(
+                    onBackClick = {
+                        navController.popBackStack()
+                    }
+                )
+            }
+
+            // ==========================================
+            // PROFILE
+            // ==========================================
+
+            composable("profile") {
+
+                ProfileScreen(
+                    onBackClick = {
+                        navController.popBackStack()
+                    },
+                    onLogoutClick = {
+                        logout()
+                    }
+                )
+            }
+
+            // ==========================================
+            // SETTINGS
+            // ==========================================
+
+            composable("settings") {
+
+                SettingsScreen(
+                    onBackClick = {
+                        navController.popBackStack()
+                    },
+                    onLogoutClick = {
+                        logout()
+                    }
+                )
+            }
+
+            // ==========================================
+            // CHORES
+            // ==========================================
+
+            composable("chores") {
+
+                ChoresScreen(
+                    onBack = {
+                        navController.popBackStack()
+                    }
+                )
+            }
+
+            // ==========================================
+            // GROCERIES
+            // ==========================================
+
+            composable("groceries") {
+
+                GroceriesScreen(
+                    onBack = {
+                        navController.popBackStack()
+                    }
+                )
+            }
+
+            // ==========================================
+            // KITCHEN BOOKINGS
+            // ==========================================
+
+            composable("kitchen_bookings") {
+
+                KitchenBookingScreen(
+                    onBack = {
+                        navController.popBackStack()
+                    }
+                )
+            }
+        }
+    }
+}
+
+
+========== ChoresScreen.kt ==========
+
+package com.example.rentmate
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+import org.json.JSONObject
+
+@Composable
+fun ChoresScreen(onBack: () -> Unit) {
+
+    val repo = remember { RentMateRepository() }
+    val scope = rememberCoroutineScope()
+
+    var records by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf("") }
+    var showAdd by remember { mutableStateOf(false) }
+    var title by remember { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
+
+    suspend fun refresh() {
+        loading = true
+        error = ""
+
+        try {
+            val response = repo.getChores()
+
+            records = (0 until response.length()).mapNotNull {
+                response.optJSONObject(it)
+            }
+
+        } catch (e: Exception) {
+            error = e.message ?: "Could not load chores."
+        }
+
+        loading = false
+    }
+
+    LaunchedEffect(Unit) {
+        refresh()
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp)
+    ) {
+
+        TextButton(onClick = onBack) {
+            Text("← Back")
+        }
+
+        Text(
+            text = "Commune Chores",
+            style = MaterialTheme.typography.headlineMedium
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        Text("Manage household responsibilities.")
+
+        Spacer(Modifier.height(16.dp))
+
+        Button(
+            onClick = { showAdd = true },
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF00813D)
+            )
+        ) {
+            Text("+ Add Chore")
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        if (loading) {
+            CircularProgressIndicator()
+        }
+
+        if (error.isNotBlank()) {
+            Text(error, color = MaterialTheme.colorScheme.error)
+
+            TextButton(
+                onClick = {
+                    scope.launch { refresh() }
+                }
+            ) {
+                Text("Retry")
+            }
+        }
+
+        if (!loading && error.isBlank() && records.isEmpty()) {
+            Text("No chores yet.")
+        }
+
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+
+            items(records) { item ->
+
+                val completed = item.optString("status")
+                    .equals("completed", ignoreCase = true)
+
+                Card(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+
+                    Column(Modifier.padding(16.dp)) {
+
+                        Text(
+                            item.optString("title", "Untitled"),
+                            style = MaterialTheme.typography.titleMedium
+                        )
+
+                        Spacer(Modifier.height(8.dp))
+
+                        Text(
+                            if (completed) "Completed" else "To do",
+                            color = if (completed) {
+                                Color(0xFF00813D)
+                            } else {
+                                Color(0xFFF56038)
+                            }
+                        )
+
+                        if (!completed) {
+
+                            TextButton(
+                                onClick = {
+                                    scope.launch {
+                                        try {
+                                            repo.completeChore(
+                                                item.optString("id")
+                                            )
+                                            refresh()
+                                        } catch (e: Exception) {
+                                            error = e.message ?: "Update failed."
+                                        }
+                                    }
+                                }
+                            ) {
+                                Text("Mark as Completed")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showAdd) {
+
+        AlertDialog(
+            onDismissRequest = {
+                if (!saving) showAdd = false
+            },
+
+            title = { Text("Add Chore") },
+
+            text = {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Chore name") }
+                )
+            },
+
+            confirmButton = {
+
+                Button(
+                    enabled = title.isNotBlank() && !saving,
+
+                    onClick = {
+
+                        scope.launch {
+
+                            saving = true
+
+                            try {
+                                repo.createChore(title.trim())
+                                title = ""
+                                showAdd = false
+                                refresh()
+                            } catch (e: Exception) {
+                                error = e.message ?: "Could not add chore."
+                            }
+
+                            saving = false
+                        }
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+
+            dismissButton = {
+                TextButton(
+                    onClick = { showAdd = false }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
+
+========== GroceriesScreen.kt ==========
+
+package com.example.rentmate
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+import org.json.JSONObject
+
+@Composable
+fun GroceriesScreen(onBack: () -> Unit) {
+
+    val repo = remember { RentMateRepository() }
+    val scope = rememberCoroutineScope()
+
+    var records by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf("") }
+    var showAdd by remember { mutableStateOf(false) }
+    var title by remember { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
+
+    suspend fun refresh() {
+        loading = true
+        error = ""
+
+        try {
+            val response = repo.getGroceries()
+
+            records = (0 until response.length()).mapNotNull {
+                response.optJSONObject(it)
+            }
+
+        } catch (e: Exception) {
+            error = e.message ?: "Could not load groceries."
+        }
+
+        loading = false
+    }
+
+    LaunchedEffect(Unit) {
+        refresh()
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp)
+    ) {
+
+        TextButton(onClick = onBack) {
+            Text("← Back")
+        }
+
+        Text(
+            text = "Shared Groceries",
+            style = MaterialTheme.typography.headlineMedium
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        Text("Your household shopping list.")
+
+        Spacer(Modifier.height(16.dp))
+
+        Button(
+            onClick = { showAdd = true },
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF00813D)
+            )
+        ) {
+            Text("+ Add Item")
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        if (loading) {
+            CircularProgressIndicator()
+        }
+
+        if (error.isNotBlank()) {
+            Text(error, color = MaterialTheme.colorScheme.error)
+        }
+
+        if (!loading && error.isBlank() && records.isEmpty()) {
+            Text("Your shopping list is empty.")
+        }
+
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+
+            items(records) { item ->
+
+                val purchased = item.optBoolean("purchased", false)
+
+                Card(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+
+                    Column(Modifier.padding(16.dp)) {
+
+                        Text(
+                            item.optString("title", "Untitled"),
+                            style = MaterialTheme.typography.titleMedium
+                        )
+
+                        Spacer(Modifier.height(8.dp))
+
+                        Text(
+                            if (purchased) "Purchased" else "Still needed",
+                            color = if (purchased) {
+                                Color(0xFF00813D)
+                            } else {
+                                Color(0xFFF56038)
+                            }
+                        )
+
+                        if (!purchased) {
+
+                            TextButton(
+                                onClick = {
+                                    scope.launch {
+                                        try {
+                                            repo.purchaseGrocery(
+                                                item.optString("id")
+                                            )
+                                            refresh()
+                                        } catch (e: Exception) {
+                                            error = e.message ?: "Update failed."
+                                        }
+                                    }
+                                }
+                            ) {
+                                Text("Mark as Purchased")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showAdd) {
+
+        AlertDialog(
+            onDismissRequest = {
+                if (!saving) showAdd = false
+            },
+
+            title = { Text("Add Grocery") },
+
+            text = {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Item name") }
+                )
+            },
+
+            confirmButton = {
+
+                Button(
+                    enabled = title.isNotBlank() && !saving,
+
+                    onClick = {
+
+                        scope.launch {
+
+                            saving = true
+
+                            try {
+                                repo.addGrocery(title.trim())
+                                title = ""
+                                showAdd = false
+                                refresh()
+                            } catch (e: Exception) {
+                                error = e.message ?: "Could not add item."
+                            }
+
+                            saving = false
+                        }
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+
+            dismissButton = {
+                TextButton(
+                    onClick = { showAdd = false }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
+
+========== KitchenBookingScreen.kt ==========
+
+package com.example.rentmate
+
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+
+import kotlinx.coroutines.launch
+import org.json.JSONObject
+
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+
+@Composable
+fun KitchenBookingScreen(onBack: () -> Unit) {
+
+    val context = LocalContext.current
+    val repo = remember { RentMateRepository() }
+    val scope = rememberCoroutineScope()
+
+    var records by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf("") }
+
+    var showAdd by remember { mutableStateOf(false) }
+    var title by remember { mutableStateOf("") }
+    var start by remember { mutableStateOf("") }
+    var end by remember { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
+
+    suspend fun refresh() {
+
+        loading = true
+        error = ""
+
+        try {
+            val response = repo.getBookings()
+
+            records = (0 until response.length()).mapNotNull {
+                response.optJSONObject(it)
+            }
+
+        } catch (e: Exception) {
+            error = e.message ?: "Could not load bookings."
+        }
+
+        loading = false
+    }
+
+    LaunchedEffect(Unit) {
+        refresh()
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp)
+    ) {
+
+        TextButton(onClick = onBack) {
+            Text("← Back")
+        }
+
+        Text(
+            text = "Kitchen & Braai",
+            style = MaterialTheme.typography.headlineMedium
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        Text("Reserve your shared facilities.")
+
+        Spacer(Modifier.height(16.dp))
+
+        Button(
+            onClick = {
+                title = ""
+                start = ""
+                end = ""
+                showAdd = true
+            }
+        ) {
+            Text("+ New Booking")
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        if (loading) {
+            CircularProgressIndicator()
+        }
+
+        if (error.isNotBlank()) {
+            Text(error, color = MaterialTheme.colorScheme.error)
+        }
+
+        if (!loading && error.isBlank() && records.isEmpty()) {
+            Text("No bookings yet.")
+        }
+
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+
+            items(records) { item ->
+
+                Card(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+
+                    Column(Modifier.padding(16.dp)) {
+
+                        Text(
+                            item.optString("title", "Booking"),
+                            style = MaterialTheme.typography.titleMedium
+                        )
+
+                        Spacer(Modifier.height(8.dp))
+
+                        Text(
+                            "Starts: " + formatBookingDate(
+                                item.optString("starts_at")
+                            )
+                        )
+
+                        Text(
+                            "Ends: " + formatBookingDate(
+                                item.optString("ends_at")
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (showAdd) {
+
+        AlertDialog(
+            onDismissRequest = {
+                if (!saving) showAdd = false
+            },
+
+            title = {
+                Text("New Booking")
+            },
+
+            text = {
+
+                Column {
+
+                    OutlinedTextField(
+                        value = title,
+                        onValueChange = { title = it },
+                        label = { Text("Booking name") }
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedButton(
+                        onClick = {
+                            pickBookingDateTime(context) {
+                                start = it
+                            }
+                        }
+                    ) {
+                        Text(
+                            if (start.isBlank()) {
+                                "Select Start"
+                            } else {
+                                "Start: ${formatBookingDate(start)}"
+                            }
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            pickBookingDateTime(context) {
+                                end = it
+                            }
+                        }
+                    ) {
+                        Text(
+                            if (end.isBlank()) {
+                                "Select End"
+                            } else {
+                                "End: ${formatBookingDate(end)}"
+                            }
+                        )
+                    }
+
+                    if (error.isNotBlank()) {
+                        Text(
+                            error,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            },
+
+            confirmButton = {
+
+                Button(
+                    enabled = !saving &&
+                        title.isNotBlank() &&
+                        start.isNotBlank() &&
+                        end.isNotBlank(),
+
+                    onClick = {
+
+                        scope.launch {
+
+                            saving = true
+
+                            try {
+                                repo.addBooking(
+                                    title = title.trim(),
+                                    start = start,
+                                    end = end
+                                )
+
+                                showAdd = false
+                                refresh()
+
+                            } catch (e: Exception) {
+                                error = e.message ?: "Booking failed."
+                            }
+
+                            saving = false
+                        }
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+
+            dismissButton = {
+
+                TextButton(
+                    onClick = { showAdd = false }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
+private fun pickBookingDateTime(
+    context: android.content.Context,
+    onSelected: (String) -> Unit
+) {
+
+    val now = Calendar.getInstance()
+
+    DatePickerDialog(
+        context,
+
+        { _, year, month, day ->
+
+            TimePickerDialog(
+                context,
+
+                { _, hour, minute ->
+
+                    val calendar = Calendar.getInstance()
+
+                    calendar.set(
+                        year,
+                        month,
+                        day,
+                        hour,
+                        minute
+                    )
+
+                    calendar.set(Calendar.SECOND, 0)
+                    calendar.set(Calendar.MILLISECOND, 0)
+
+                    val formatter = SimpleDateFormat(
+                        "yyyy-MM-dd'T'HH:mm:ssXXX",
+                        Locale.US
+                    )
+
+                    onSelected(
+                        formatter.format(calendar.time)
+                    )
+                },
+
+                now.get(Calendar.HOUR_OF_DAY),
+                now.get(Calendar.MINUTE),
+                true
+
+            ).show()
+        },
+
+        now.get(Calendar.YEAR),
+        now.get(Calendar.MONTH),
+        now.get(Calendar.DAY_OF_MONTH)
+
+    ).show()
+}
+
+private fun formatBookingDate(value: String): String {
+
+    return try {
+
+        val normalized = value.replace(
+            Regex("\\.(\\d+)(?=Z|[+-]\\d{2}:?\\d{2}$)")
+        ) {
+            "." + it.groupValues[1].padEnd(3, '0').take(3)
+        }
+
+        val patterns = listOf(
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+            "yyyy-MM-dd'T'HH:mm:ssXXX"
+        )
+
+        var result = value
+
+        for (pattern in patterns) {
+
+            try {
+                val parser = SimpleDateFormat(
+                    pattern,
+                    Locale.US
+                )
+
+                parser.isLenient = false
+
+                val date = parser.parse(normalized)
+
+                if (date != null) {
+
+                    result = SimpleDateFormat(
+                        "dd MMM yyyy, HH:mm",
+                        Locale.ENGLISH
+                    ).format(date)
+
+                    break
+                }
+
+            } catch (_: Exception) {
+            }
+        }
+
+        result
+
+    } catch (_: Exception) {
+        value
+    }
+}
+
+
+========== MainActivity.kt ==========
+
+package com.example.rentmate
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.material3.MaterialTheme
+
+class MainActivity : ComponentActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        setContent {
+
+            MaterialTheme {
+
+                MainRentMateNavigation()
+
+            }
+        }
+    }
+}
+
+

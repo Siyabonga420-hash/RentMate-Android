@@ -1,0 +1,58 @@
+﻿package com.example.rentmate
+
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+
+private val Navy = Color(0xFF2D3142)
+private val Green = Color(0xFF00813D)
+
+@Composable
+fun RentMateBottomBar(
+    currentRoute: String?,
+    onNavigate: (String) -> Unit
+) {
+    val items = listOf(
+        Triple("dashboard", "Home", "⌂"),
+        Triple("accommodation_details", "Explore", "⌕"),
+        Triple("activity", "Activity", "●"),
+        Triple("profile", "Profile", "☺")
+    )
+
+    NavigationBar(
+        modifier = Modifier.fillMaxWidth(),
+        containerColor = Color.White
+    ) {
+        items.forEach { (route, label, symbol) ->
+
+            NavigationBarItem(
+                selected = currentRoute == route,
+
+                onClick = {
+                    onNavigate(route)
+                },
+
+                icon = {
+                    Text(
+                        text = symbol,
+                        style = MaterialTheme.typography.headlineSmall
+                    )
+                },
+
+                label = {
+                    Text(label)
+                },
+
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = Green,
+                    selectedTextColor = Green,
+                    indicatorColor = Color(0xFFE5F5EC),
+                    unselectedIconColor = Navy,
+                    unselectedTextColor = Navy
+                )
+            )
+        }
+    }
+}
